@@ -18,8 +18,19 @@
  */
 
 #import "CDVInAppBrowser.h"
+#import "NSString+URLEncoding.h"
+#import <Social/Social.h>
 #import <Cordova/CDVPluginResult.h>
 #import <Cordova/CDVUserAgentUtil.h>
+#import <Foundation/NSException.h>
+#import <MessageUI/MFMessageComposeViewController.h>
+#import <MessageUI/MFMailComposeViewController.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+
+static NSString *const kShareOptionMessage = @"message";
+static NSString *const kShareOptionSubject = @"subject";
+static NSString *const kShareOptionFiles = @"files";
+static NSString *const kShareOptionUrl = @"url";
 
 #define    kInAppBrowserTargetSelf @"_self"
 #define    kInAppBrowserTargetSystem @"_system"
@@ -76,6 +87,11 @@
 	return NO;
 }
 
+- (NSString*) getPDFURL {
+  NSString* returnURL = self.absoluteUrl;
+  return returnURL;
+}
+
 - (void)open:(CDVInvokedUrlCommand*)command
 {
     CDVPluginResult* pluginResult;
@@ -84,7 +100,10 @@
     NSString* target = [command argumentAtIndex:1 withDefault:kInAppBrowserTargetSelf];
     NSString* options = [command argumentAtIndex:2 withDefault:@"" andClass:[NSString class]];
 
+    self.absoluteUrl = url;    
     self.callbackId = command.callbackId;
+
+    [[CDVInAppBrowserViewController alloc] setPDFURL:url];
 
     if (url != nil) {
 #ifdef __CORDOVA_4_0_0
@@ -105,6 +124,7 @@
         } else { // _blank or anything else
             [self openInInAppBrowser:absoluteUrl withOptions:options];
         }
+
 
         pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK];
     } else {
@@ -151,7 +171,7 @@
         if(appendUserAgent){
             userAgent = [userAgent stringByAppendingString: appendUserAgent];
         }
-        self.inAppBrowserViewController = [[CDVInAppBrowserViewController alloc] initWithUserAgent:userAgent prevUserAgent:[self.commandDelegate userAgent] browserOptions: browserOptions];
+        self.inAppBrowserViewController = [[CDVInAppBrowserViewController alloc] initWithUserAgent:userAgent prevUserAgent:[self.commandDelegate userAgent] browserOptions: browserOptions pdfURL: self.absoluteUrl];
         self.inAppBrowserViewController.navigationDelegate = self;
 
         if ([self.viewController conformsToProtocol:@protocol(CDVScreenOrientationDelegate)]) {
@@ -476,11 +496,14 @@
 
 #pragma mark CDVInAppBrowserViewController
 
-@implementation CDVInAppBrowserViewController
+@implementation CDVInAppBrowserViewController {
+    UIPopoverController *_popover;
+    NSString *_popupCoordinates;
+}
 
 @synthesize currentURL;
 
-- (id)initWithUserAgent:(NSString*)userAgent prevUserAgent:(NSString*)prevUserAgent browserOptions: (CDVInAppBrowserOptions*) browserOptions
+- (id)initWithUserAgent:(NSString*)userAgent prevUserAgent:(NSString*)prevUserAgent browserOptions: (CDVInAppBrowserOptions*) browserOptions pdfURL: (NSString*)pdfURL
 {
     self = [super init];
     if (self != nil) {
@@ -494,6 +517,12 @@
 #endif
         
         [self createViews];
+
+        if ([self isEmailAvailable]) {
+          [self cycleTheGlobalMailComposer];
+        }
+
+        _pdfURL = pdfURL;
     }
 
     return self;
@@ -502,6 +531,147 @@
 // Prevent crashes on closing windows
 -(void)dealloc {
    self.webView.delegate = nil;
+}
+
+- (bool)isEmailAvailable {
+  Class messageClass = (NSClassFromString(@"MFMailComposeViewController"));
+  return messageClass != nil && [messageClass canSendMail];
+}
+
+-(void)cycleTheGlobalMailComposer {
+  // we are cycling the damned GlobalMailComposer: http://stackoverflow.com/questions/25604552/i-have-real-misunderstanding-with-mfmailcomposeviewcontroller-in-swift-ios8-in/25604976#25604976
+  self.globalMailComposer = nil;
+  self.globalMailComposer = [[MFMailComposeViewController alloc] init];
+}
+
+/**
+ * Delegate will be called after the mail composer did finish an action
+ * to dismiss the view.
+ */
+- (void) mailComposeController:(MFMailComposeViewController*)controller
+           didFinishWithResult:(MFMailComposeResult)result
+                         error:(NSError*)error {
+  bool ok = result == MFMailComposeResultSent;
+  [self.globalMailComposer dismissViewControllerAnimated:YES completion:^{[self cycleTheGlobalMailComposer];}];
+  //CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:ok];
+  //[self.commandDelegate sendPluginResult:pluginResult callbackId:_command.callbackId];
+}
+
+- (UIViewController*) getTopMostViewController {
+  UIViewController *presentingViewController = [[[UIApplication sharedApplication] delegate] window].rootViewController;
+  while (presentingViewController.presentedViewController != nil) {
+    presentingViewController = presentingViewController.presentedViewController;
+  }
+  return presentingViewController;
+}
+
+- (NSString*)getIPadPopupCoordinates {
+  if (_popupCoordinates != nil) {
+    return _popupCoordinates;
+  }
+  if ([self.webView respondsToSelector:@selector(stringByEvaluatingJavaScriptFromString:)]) {
+    return [(UIWebView*)self.webView stringByEvaluatingJavaScriptFromString:@"window.plugins.socialsharing.iPadPopupCoordinates();"];
+  } else {
+    // prolly a wkwebview, ignoring for now
+    return nil;
+  }
+}
+
+- (CGRect)getPopupRectFromIPadPopupCoordinates:(NSArray*)comps {
+  CGRect rect = CGRectZero;
+  if ([comps count] == 4) {
+    rect = CGRectMake([[comps objectAtIndex:0] integerValue], [[comps objectAtIndex:1] integerValue], [[comps objectAtIndex:2] integerValue], [[comps objectAtIndex:3] integerValue]);
+  }
+  return rect;
+}
+
+-(UIImage*)getImage: (NSString *)imageName {
+  UIImage *image = nil;
+  if (imageName != (id)[NSNull null]) {
+    if ([imageName hasPrefix:@"http"]) {
+      image = [UIImage imageWithData:[NSData dataWithContentsOfURL:[NSURL URLWithString:imageName]]];
+    } else if ([imageName hasPrefix:@"www/"]) {
+      image = [UIImage imageNamed:imageName];
+    } else if ([imageName hasPrefix:@"file://"]) {
+      image = [UIImage imageWithData:[NSData dataWithContentsOfFile:[[NSURL URLWithString:imageName] path]]];
+    } else if ([imageName hasPrefix:@"data:"]) {
+      // using a base64 encoded string
+      NSURL *imageURL = [NSURL URLWithString:imageName];
+      NSData *imageData = [NSData dataWithContentsOfURL:imageURL];
+      image = [UIImage imageWithData:imageData];
+    } else if ([imageName hasPrefix:@"assets-library://"]) {
+      // use assets-library
+      NSURL *imageURL = [NSURL URLWithString:imageName];
+      NSData *imageData = [NSData dataWithContentsOfURL:imageURL];
+      image = [UIImage imageWithData:imageData];
+    } else {
+      // assume anywhere else, on the local filesystem
+      image = [UIImage imageWithData:[NSData dataWithContentsOfFile:imageName]];
+    }
+  }
+  return image;
+}
+
+-(NSURL*)getFile: (NSString *)fileName {
+  NSURL *file = nil;
+  if (fileName != (id)[NSNull null]) {
+    if ([fileName hasPrefix:@"http"]) {
+      NSURL *url = [NSURL URLWithString:fileName];
+      NSData *fileData = [NSData dataWithContentsOfURL:url];
+      NSString *name = (NSString*)[[fileName componentsSeparatedByString: @"/"] lastObject];
+      file = [NSURL fileURLWithPath:[self storeInFile:[name componentsSeparatedByString: @"?"][0] fileData:fileData]];
+    } else if ([fileName hasPrefix:@"www/"]) {
+      NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+      NSString *fullPath = [NSString stringWithFormat:@"%@/%@", bundlePath, fileName];
+      file = [NSURL fileURLWithPath:fullPath];
+    } else if ([fileName hasPrefix:@"file://"]) {
+      // stripping the first 6 chars, because the path should start with / instead of file://
+      file = [NSURL fileURLWithPath:[fileName substringFromIndex:6]];
+    } else if ([fileName hasPrefix:@"data:"]) {
+      // using a base64 encoded string
+      // extract some info from the 'fileName', which is for example: data:text/calendar;base64,<encoded stuff here>
+      NSString *fileType = (NSString*)[[[fileName substringFromIndex:5] componentsSeparatedByString: @";"] objectAtIndex:0];
+      fileType = (NSString*)[[fileType componentsSeparatedByString: @"/"] lastObject];
+      NSString *base64content = (NSString*)[[fileName componentsSeparatedByString: @","] lastObject];
+      NSData *fileData = [self dataFromBase64String:base64content];
+      file = [NSURL fileURLWithPath:[self storeInFile:[NSString stringWithFormat:@"%@.%@", @"file", fileType] fileData:fileData]];
+    } else {
+      // assume anywhere else, on the local filesystem
+      file = [NSURL fileURLWithPath:fileName];
+    }
+  }
+  return file;
+}
+
+-(NSString*) storeInFile: (NSString*) fileName
+                fileData: (NSData*) fileData {
+  NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+  NSString *documentsDirectory = [paths objectAtIndex:0];
+  NSString *filePath = [documentsDirectory stringByAppendingPathComponent:fileName];
+  [fileData writeToFile:filePath atomically:YES];
+  _tempStoredFile = filePath;
+  return filePath;
+}
+
+- (void) cleanupStoredFiles {
+  if (_tempStoredFile != nil) {
+    NSError *error;
+    [[NSFileManager defaultManager]removeItemAtPath:_tempStoredFile error:&error];
+  }
+}
+
+- (NSData*) dataFromBase64String:(NSString*)aString {
+  return [[NSData alloc] initWithBase64EncodedString:aString options:0];
+}
+
+- (void)popoverController:(UIPopoverController *)popoverController willRepositionPopoverToRect:(inout CGRect *)rect inView:(inout UIView **)view {
+  NSArray *comps = [[self getIPadPopupCoordinates] componentsSeparatedByString:@","];
+  CGRect newRect = [self getPopupRectFromIPadPopupCoordinates:comps];
+  rect->origin = newRect.origin;
+}
+
+- (void)popoverControllerDidDismissPopover:(UIPopoverController *)popoverController {
+  _popover = nil;
 }
 
 - (void)createViews
@@ -559,7 +729,8 @@
     self.toolbar.alpha = 1.000;
     self.toolbar.autoresizesSubviews = YES;
     self.toolbar.autoresizingMask = toolbarIsAtBottom ? (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin) : UIViewAutoresizingFlexibleWidth;
-    self.toolbar.barStyle = UIBarStyleBlackOpaque;
+    //self.toolbar.barStyle = UIBarStyleBlack;//UIBarStyleBlackOpaque;
+    self.toolbar.barTintColor = [UIColor colorWithRed:220.0 / 255.0 green:95.0 / 255.0 blue:19.0 / 255.0 alpha:1];
     self.toolbar.clearsContextBeforeDrawing = NO;
     self.toolbar.clipsToBounds = NO;
     self.toolbar.contentMode = UIViewContentModeScaleToFill;
@@ -567,6 +738,24 @@
     self.toolbar.multipleTouchEnabled = NO;
     self.toolbar.opaque = NO;
     self.toolbar.userInteractionEnabled = YES;
+
+    toolbarY = self.view.bounds.size.height - TOOLBAR_HEIGHT;
+    toolbarFrame = CGRectMake(0.0, toolbarY, self.view.bounds.size.width, TOOLBAR_HEIGHT);
+    self.toolsharebar = [[UIToolbar alloc] initWithFrame:toolbarFrame];
+    self.toolsharebar.alpha = 1.000;
+    self.toolsharebar.autoresizesSubviews = YES;
+    self.toolsharebar.autoresizingMask = toolbarIsAtBottom ? (UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin) : UIViewAutoresizingFlexibleWidth;
+    self.toolsharebar.barStyle = UIBarStyleDefault;
+    self.toolsharebar.clearsContextBeforeDrawing = NO;
+    self.toolsharebar.clipsToBounds = NO;
+    self.toolsharebar.contentMode = UIViewContentModeScaleToFill;
+    self.toolsharebar.hidden = NO;
+    self.toolsharebar.multipleTouchEnabled = NO;
+    self.toolsharebar.opaque = NO;
+    self.toolsharebar.userInteractionEnabled = YES;
+    UIBarButtonItem *shareButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAction
+                                    target:self
+                                    action:@selector(shareAction:)];
 
     CGFloat labelInset = 5.0;
     float locationBarY = toolbarIsAtBottom ? self.view.bounds.size.height - FOOTER_HEIGHT : self.view.bounds.size.height - LOCATIONBAR_HEIGHT;
@@ -611,12 +800,135 @@
     self.backButton.imageInsets = UIEdgeInsetsZero;
 
     [self.toolbar setItems:@[self.closeButton, flexibleSpaceButton, self.backButton, fixedSpaceButton, self.forwardButton]];
+    [self.toolsharebar setItems:@[flexibleSpaceButton, shareButton, flexibleSpaceButton]];
 
     self.view.backgroundColor = [UIColor grayColor];
     [self.view addSubview:self.toolbar];
     [self.view addSubview:self.addressLabel];
     [self.view addSubview:self.spinner];
+    [self.view addSubview:self.toolsharebar];
 }
+
+- (void) setPDFURL:(NSString*)aString {
+    _pdfURL = aString;
+}
+
+-(void)shareAction:(id)sender {
+  //[self.commandDelegate runInBackground:^{ //avoid main thread block  especially if sharing big files from url
+    if (!NSClassFromString(@"UIActivityViewController")) {
+      CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"not available"];
+      //[self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+      return;
+    }
+
+    if(!_pdfURL) {
+      return ;
+    }
+    NSString *strURL =  _pdfURL;
+
+    NSString *message   =strURL;
+    NSString *subject   = @"Please share this pdf";
+    NSArray  *filenames = @[strURL];
+    NSString *urlString = strURL;
+    BOOL boolResponse = YES;
+
+    NSMutableArray *activityItems = [[NSMutableArray alloc] init];
+
+    if (message != (id)[NSNull null] && message != nil) {
+      [activityItems addObject:message];
+    }
+
+    if (filenames != (id)[NSNull null] && filenames != nil && filenames.count > 0) {
+      NSMutableArray *files = [[NSMutableArray alloc] init];
+      for (NSString* filename in filenames) {
+        NSObject *file = [self getImage:filename];
+        if (file == nil) {
+          file = [self getFile:filename];
+        }
+        if (file != nil) {
+          [files addObject:file];
+        }
+      }
+      [activityItems addObjectsFromArray:files];
+    }
+
+    if (urlString != (id)[NSNull null] && urlString != nil) {
+        [activityItems addObject:[NSURL URLWithString:[urlString URLEncodedString]]];
+    }
+
+    UIActivity *activity = [[UIActivity alloc] init];
+    NSArray *applicationActivities = [[NSArray alloc] initWithObjects:activity, nil];
+    UIActivityViewController *activityVC = [[UIActivityViewController alloc] initWithActivityItems:activityItems applicationActivities:applicationActivities];
+    if (subject != (id)[NSNull null] && subject != nil) {
+      [activityVC setValue:subject forKey:@"subject"];
+    }
+
+    if ([activityVC respondsToSelector:(@selector(setCompletionWithItemsHandler:))]) {
+      [activityVC setCompletionWithItemsHandler:^(NSString *activityType, BOOL completed, NSArray * returnedItems, NSError * activityError) {
+        [self cleanupStoredFiles];
+        if (boolResponse) {
+          //[self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:completed] callbackId:command.callbackId];
+        } else {
+          //NSDictionary * result = @{@"completed":@(completed), @"app":activityType == nil ? @"" : activityType};
+          //[self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result] callbackId:command.callbackId];
+        }
+      }];
+    } else {
+      // let's suppress this warning otherwise folks will start opening issues while it's not relevant
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+        [activityVC setCompletionHandler:^(NSString *activityType, BOOL completed) {
+          [self cleanupStoredFiles];
+          NSDictionary * result = @{@"completed":@(completed), @"app":activityType};
+          //CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:result];
+          //[self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
+        }];
+#pragma GCC diagnostic warning "-Wdeprecated-declarations"
+      }
+
+    NSArray * socialSharingExcludeActivities = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SocialSharingExcludeActivities"];
+    if (socialSharingExcludeActivities!=nil && [socialSharingExcludeActivities count] > 0) {
+      activityVC.excludedActivityTypes = socialSharingExcludeActivities;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^(void){
+      // iPad on iOS >= 8 needs a different approach
+      if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        NSString* iPadCoords = [self getIPadPopupCoordinates];
+        if (iPadCoords != nil && ![iPadCoords isEqual:@"-1,-1,-1,-1"]) {
+          NSArray *comps = [iPadCoords componentsSeparatedByString:@","];
+          CGRect rect = [self getPopupRectFromIPadPopupCoordinates:comps];
+          if ([activityVC respondsToSelector:@selector(popoverPresentationController)]) {
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 80000 // iOS 8.0 supported
+            activityVC.popoverPresentationController.sourceView = self.webView;
+            activityVC.popoverPresentationController.sourceRect = rect;
+#endif
+          } else {
+            _popover = [[UIPopoverController alloc] initWithContentViewController:activityVC];
+            _popover.delegate = self;
+            [_popover presentPopoverFromRect:rect inView:self.webView permittedArrowDirections:UIPopoverArrowDirectionAny animated:YES];
+          }
+        } else if ([activityVC respondsToSelector:@selector(popoverPresentationController)]) {
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 80000 // iOS 8.0 supported
+          activityVC.popoverPresentationController.sourceView = self.webView;
+          // position the popup at the bottom, just like iOS < 8 did (and iPhone still does on iOS 8)
+          NSArray *comps = [NSArray arrayWithObjects:
+                            [NSNumber numberWithInt:(self.view.frame.size.width/2)-200],
+                            [NSNumber numberWithInt:self.view.frame.size.height],
+                            [NSNumber numberWithInt:400],
+                            [NSNumber numberWithInt:400],
+                            nil];
+          CGRect rect = [self getPopupRectFromIPadPopupCoordinates:comps];
+          activityVC.popoverPresentationController.sourceRect = rect;
+#endif
+        }
+      }
+      [[self getTopMostViewController] presentViewController:activityVC animated:YES completion:nil];
+    });
+  //}];
+}
+
+
+#pragma mark - UIPopoverControllerDelegate methods
 
 - (void) setWebViewFrame : (CGRect) frame {
     NSLog(@"Setting the WebView's frame to %@", NSStringFromCGRect(frame));
@@ -630,7 +942,7 @@
     self.closeButton = nil;
     self.closeButton = [[UIBarButtonItem alloc] initWithTitle:title style:UIBarButtonItemStyleBordered target:self action:@selector(close)];
     self.closeButton.enabled = YES;
-    self.closeButton.tintColor = [UIColor colorWithRed:60.0 / 255.0 green:136.0 / 255.0 blue:230.0 / 255.0 alpha:1];
+    self.closeButton.tintColor = [UIColor colorWithRed:255.0 / 255.0 green:255.0 / 255.0 blue:255.0 / 255.0 alpha:1];
 
     NSMutableArray* items = [self.toolbar.items mutableCopy];
     [items replaceObjectAtIndex:0 withObject:self.closeButton];

@@ -20,6 +20,7 @@
 #import <Cordova/CDVPlugin.h>
 #import <Cordova/CDVInvokedUrlCommand.h>
 #import <Cordova/CDVScreenOrientationDelegate.h>
+ #import <MessageUI/MFMailComposeViewController.h>
 
 #ifdef __CORDOVA_4_0_0
     #import <Cordova/CDVUIWebViewDelegate.h>
@@ -34,19 +35,23 @@
 
 @property (nonatomic, retain) CDVInAppBrowserViewController* inAppBrowserViewController;
 @property (nonatomic, copy) NSString* callbackId;
+@property (nonatomic, copy) NSString* absoluteUrl;
 @property (nonatomic, copy) NSRegularExpression *callbackIdPattern;
+@property (nonatomic, copy) CDVInvokedUrlCommand* mainCmd;
 
 - (void)open:(CDVInvokedUrlCommand*)command;
 - (void)close:(CDVInvokedUrlCommand*)command;
 - (void)injectScriptCode:(CDVInvokedUrlCommand*)command;
 - (void)show:(CDVInvokedUrlCommand*)command;
-
+- (NSString*)getPDFURL;
 @end
 
 @interface CDVInAppBrowserOptions : NSObject {}
 
+@property (nonatomic, copy) NSString* tempStoredFile;
 @property (nonatomic, assign) BOOL location;
 @property (nonatomic, assign) BOOL toolbar;
+@property (nonatomic, assign) BOOL toolsharebar;
 @property (nonatomic, copy) NSString* closebuttoncaption;
 @property (nonatomic, copy) NSString* toolbarposition;
 @property (nonatomic, assign) BOOL clearcache;
@@ -73,7 +78,8 @@
     NSString* _prevUserAgent;
     NSInteger _userAgentLockToken;
     CDVInAppBrowserOptions *_browserOptions;
-    
+   	NSString* _tempStoredFile;
+
 #ifdef __CORDOVA_4_0_0
     CDVUIWebViewDelegate* _webViewDelegate;
 #else
@@ -89,10 +95,13 @@
 @property (nonatomic, strong) IBOutlet UIBarButtonItem* forwardButton;
 @property (nonatomic, strong) IBOutlet UIActivityIndicatorView* spinner;
 @property (nonatomic, strong) IBOutlet UIToolbar* toolbar;
+@property (nonatomic, strong) IBOutlet UIToolbar* toolsharebar;
 
 @property (nonatomic, weak) id <CDVScreenOrientationDelegate> orientationDelegate;
 @property (nonatomic, weak) CDVInAppBrowser* navigationDelegate;
 @property (nonatomic) NSURL* currentURL;
+@property (nonatomic) NSString* pdfURL;
+@property (nonatomic, strong) MFMailComposeViewController *globalMailComposer;
 
 - (void)close;
 - (void)navigateTo:(NSURL*)url;
@@ -100,7 +109,8 @@
 - (void)showToolBar:(BOOL)show : (NSString *) toolbarPosition;
 - (void)setCloseButtonTitle:(NSString*)title;
 
-- (id)initWithUserAgent:(NSString*)userAgent prevUserAgent:(NSString*)prevUserAgent browserOptions: (CDVInAppBrowserOptions*) browserOptions;
+- (void)setPDFURL:(NSString*)strUrl;
+- (id)initWithUserAgent:(NSString*)userAgent prevUserAgent:(NSString*)prevUserAgent browserOptions: (CDVInAppBrowserOptions*) browserOptions pdfURL:(NSString*)pdfURL;
 
 @end
 

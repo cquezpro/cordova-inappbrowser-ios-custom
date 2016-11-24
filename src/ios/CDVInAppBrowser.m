@@ -19,6 +19,8 @@
 
 #import "CDVInAppBrowser.h"
 #import "NSString+URLEncoding.h"
+#import "MBProgressHUD.h"
+#import <QuartzCore/QuartzCore.h>
 #import <Social/Social.h>
 #import <Cordova/CDVPluginResult.h>
 #import <Cordova/CDVUserAgentUtil.h>
@@ -180,6 +182,7 @@ static NSString *const kShareOptionUrl = @"url";
     }
 
     [self.inAppBrowserViewController showLocationBar:browserOptions.location];
+    //[self.inAppBrowserViewController showShareBar:browserOptions.sharebar];
     [self.inAppBrowserViewController showToolBar:browserOptions.toolbar :browserOptions.toolbarposition];
     if (browserOptions.closebuttoncaption != nil) {
         [self.inAppBrowserViewController setCloseButtonTitle:browserOptions.closebuttoncaption];
@@ -799,14 +802,16 @@ static NSString *const kShareOptionUrl = @"url";
     self.backButton.enabled = YES;
     self.backButton.imageInsets = UIEdgeInsetsZero;
 
-    [self.toolbar setItems:@[self.closeButton, flexibleSpaceButton, self.backButton, fixedSpaceButton, self.forwardButton]];
+    [self.toolbar setItems:@[self.closeButton]];
     [self.toolsharebar setItems:@[flexibleSpaceButton, shareButton, flexibleSpaceButton]];
 
     self.view.backgroundColor = [UIColor grayColor];
     [self.view addSubview:self.toolbar];
     [self.view addSubview:self.addressLabel];
     [self.view addSubview:self.spinner];
-    [self.view addSubview:self.toolsharebar];
+
+    if(_browserOptions.sharebar)
+      [self.view addSubview:self.toolsharebar];
 }
 
 - (void) setPDFURL:(NSString*)aString {
@@ -814,19 +819,28 @@ static NSString *const kShareOptionUrl = @"url";
 }
 
 -(void)shareAction:(id)sender {
-  //[self.commandDelegate runInBackground:^{ //avoid main thread block  especially if sharing big files from url
-    if (!NSClassFromString(@"UIActivityViewController")) {
-      CDVPluginResult * pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_ERROR messageAsString:@"not available"];
-      //[self.commandDelegate sendPluginResult:pluginResult callbackId:command.callbackId];
-      return;
-    }
-
     if(!_pdfURL) {
       return ;
     }
+
+    MBProgressHUD *hud = [MBProgressHUD showHUDAddedTo:self.view animated:YES];
+      
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+
+        // Do something useful in the background
+        [self doSomeWork];
+        // IMPORTANT - Dispatch back to the main thread. Always access UI
+        // classes (including MBProgressHUD) on the main thread.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [hud hideAnimated:YES];
+        });
+    });
+}
+
+-(void)doSomeWork {
     NSString *strURL =  _pdfURL;
 
-    NSString *message   =strURL;
+    NSString *message   = strURL;
     NSString *subject   = @"Please share this pdf";
     NSArray  *filenames = @[strURL];
     NSString *urlString = strURL;
@@ -864,7 +878,7 @@ static NSString *const kShareOptionUrl = @"url";
     }
 
     if ([activityVC respondsToSelector:(@selector(setCompletionWithItemsHandler:))]) {
-      [activityVC setCompletionWithItemsHandler:^(NSString *activityType, BOOL completed, NSArray * returnedItems, NSError * activityError) {
+        [activityVC setCompletionWithItemsHandler:^(NSString *activityType, BOOL completed, NSArray * returnedItems, NSError * activityError) {
         [self cleanupStoredFiles];
         if (boolResponse) {
           //[self.commandDelegate sendPluginResult:[CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:completed] callbackId:command.callbackId];
@@ -924,7 +938,6 @@ static NSString *const kShareOptionUrl = @"url";
       }
       [[self getTopMostViewController] presentViewController:activityVC animated:YES completion:nil];
     });
-  //}];
 }
 
 
@@ -983,6 +996,37 @@ static NSString *const kShareOptionUrl = @"url";
             locationbarFrame.origin.y = webViewBounds.size.height;
             self.addressLabel.frame = locationbarFrame;
         }
+    } else {
+        self.addressLabel.hidden = YES;
+
+        if (toolbarVisible) {
+            // locationBar is on top of toolBar, hide locationBar
+
+            // webView take up whole height less toolBar height
+            CGRect webViewBounds = self.view.bounds;
+            webViewBounds.size.height -= TOOLBAR_HEIGHT;
+            [self setWebViewFrame:webViewBounds];
+        } else {
+            // no toolBar, expand webView to screen dimensions
+            [self setWebViewFrame:self.view.bounds];
+        }
+    }
+}
+
+
+- (void)showShareBar:(BOOL)show
+{
+    CGRect locationbarFrame = self.addressLabel.frame;
+
+    BOOL toolbarVisible = !self.toolbar.hidden;
+
+    // prevent double show/hide
+    if (show == !(self.addressLabel.hidden)) {
+        return;
+    }
+
+    if (show) {
+        
     } else {
         self.addressLabel.hidden = YES;
 
@@ -1263,6 +1307,7 @@ static NSString *const kShareOptionUrl = @"url";
         // default values
         self.location = YES;
         self.toolbar = YES;
+        self.sharebar = YES;
         self.closebuttoncaption = nil;
         self.toolbarposition = kInAppBrowserToolbarBarPositionBottom;
         self.clearcache = NO;

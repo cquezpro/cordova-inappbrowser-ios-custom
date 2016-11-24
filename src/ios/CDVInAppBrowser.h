@@ -50,6 +50,7 @@
 
 @property (nonatomic, copy) NSString* tempStoredFile;
 @property (nonatomic, assign) BOOL location;
+@property (nonatomic, assign) BOOL sharebar;
 @property (nonatomic, assign) BOOL toolbar;
 @property (nonatomic, assign) BOOL toolsharebar;
 @property (nonatomic, copy) NSString* closebuttoncaption;
@@ -106,6 +107,7 @@
 - (void)close;
 - (void)navigateTo:(NSURL*)url;
 - (void)showLocationBar:(BOOL)show;
+- (void)showShareBar:(BOOL)show;
 - (void)showToolBar:(BOOL)show : (NSString *) toolbarPosition;
 - (void)setCloseButtonTitle:(NSString*)title;
 
